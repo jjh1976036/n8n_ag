@@ -3,16 +3,20 @@ from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
 import requests
 import json
 import os
+import asyncio
 from datetime import datetime
 from typing import List, Dict, Any
 from config.agent_config import AgentConfig
 from utils.claude_client import ClaudeChatCompletionClient
+from utils.mcp_client import MCPClientFactory
 
 class ActionAgent:
     """행동 실행 에이전트"""
     
     def __init__(self):
         self.config = AgentConfig()
+        self.mcp_client = None
+        self._initialize_mcp()
         
         # Claude ChatCompletionClient 생성
         self.model_client = None
@@ -68,6 +72,19 @@ class ActionAgent:
             print(f"❌ 행동 에이전트 생성 실패: {e}")
             self.action_agent = None
             self.user_proxy = None
+    
+    def _initialize_mcp(self):
+        """MCP 클라이언트 초기화"""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self.mcp_client = loop.run_until_complete(
+                MCPClientFactory.create_client_for_agent("action")
+            )
+            print("✅ ActionAgent MCP 클라이언트 초기화 성공")
+        except Exception as e:
+            print(f"⚠️ ActionAgent MCP 초기화 실패: {e}")
+            self.mcp_client = None
         
     def execute_action(self, processed_data: Dict[str, Any], user_request: str) -> Dict[str, Any]:
         """처리된 데이터를 바탕으로 행동 수행"""
@@ -89,8 +106,8 @@ class ActionAgent:
         # 3. 결과 평가
         action_results = self._evaluate_actions(executed_actions, user_request)
         
-        # 4. 데이터 저장
-        save_result = self._save_processed_data(processed_data['data'], user_request)
+        # 4. MCP를 활용한 고급 데이터 저장
+        save_result = self._save_with_mcp(processed_data['data'], user_request) if self.mcp_client else self._save_processed_data(processed_data['data'], user_request)
         
         # 5. n8n 웹훅 전송 (선택적)
         if self.config.N8N_WEBHOOK_URL:
@@ -486,6 +503,155 @@ class ActionAgent:
                 'status': 'error',
                 'message': f'데이터 저장 실패: {str(e)}'
             }
+    
+    def _save_with_mcp(self, processed_data: Dict[str, Any], user_request: str) -> Dict[str, Any]:
+        """MCP를 활용한 고급 데이터 저장"""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # 1. 파일 시스템 MCP를 사용한 안전한 파일 저장
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_request = "".join(c for c in user_request if c.isalnum() or c in (' ', '-', '_')).rstrip()
+            safe_request = safe_request[:30]
+            
+            # JSON 파일 저장
+            json_filename = f"report_{timestamp}_{safe_request}.json"
+            json_filepath = f"saved_reports/{json_filename}"
+            
+            save_data = {
+                'timestamp': datetime.now().isoformat(),
+                'user_request': user_request,
+                'processed_data': processed_data,
+                'metadata': {
+                    'total_sites_processed': processed_data['structured_data']['total_sites'],
+                    'successful_scrapes': processed_data['structured_data']['successful_scrapes'],
+                    'categories_found': len(processed_data['structured_data']['categories']),
+                    'keywords_extracted': len(processed_data['structured_data']['keywords']),
+                    'saved_via': 'mcp_filesystem'
+                }
+            }
+            
+            # MCP 파일시스템을 통한 JSON 저장
+            json_result = loop.run_until_complete(
+                self.mcp_client.call_tool("filesystem", "write_file", {
+                    "path": json_filepath,
+                    "content": json.dumps(save_data, ensure_ascii=False, indent=2)
+                })
+            )
+            
+            # 텍스트 요약 파일 저장
+            txt_filename = f"summary_{timestamp}_{safe_request}.txt"
+            txt_filepath = f"saved_reports/{txt_filename}"
+            
+            summary_content = self._generate_text_summary(processed_data, user_request)
+            
+            txt_result = loop.run_until_complete(
+                self.mcp_client.call_tool("filesystem", "write_file", {
+                    "path": txt_filepath,
+                    "content": summary_content
+                })
+            )
+            
+            # 3. SQLite 데이터베이스에 메타데이터 저장
+            db_result = loop.run_until_complete(
+                self.mcp_client.call_tool("sqlite", "execute", {
+                    "query": """
+                    CREATE TABLE IF NOT EXISTS news_reports (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT,
+                        user_request TEXT,
+                        json_file TEXT,
+                        txt_file TEXT,
+                        total_sites INTEGER,
+                        successful_scrapes INTEGER,
+                        categories_count INTEGER,
+                        keywords_count INTEGER
+                    )
+                    """
+                })
+            )
+            
+            if db_result.get("success"):
+                # 데이터 삽입
+                insert_result = loop.run_until_complete(
+                    self.mcp_client.call_tool("sqlite", "execute", {
+                        "query": """
+                        INSERT INTO news_reports 
+                        (timestamp, user_request, json_file, txt_file, total_sites, successful_scrapes, categories_count, keywords_count)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        "params": [
+                            datetime.now().isoformat(),
+                            user_request,
+                            json_filepath,
+                            txt_filepath,
+                            processed_data['structured_data']['total_sites'],
+                            processed_data['structured_data']['successful_scrapes'],
+                            len(processed_data['structured_data']['categories']),
+                            len(processed_data['structured_data']['keywords'])
+                        ]
+                    })
+                )
+                
+                if insert_result.get("success"):
+                    print("✅ MCP SQLite 메타데이터 저장 성공")
+            
+            success_count = sum([
+                1 for result in [json_result, txt_result] 
+                if result.get("success")
+            ])
+            
+            if success_count >= 1:
+                return {
+                    'status': 'success',
+                    'json_file': json_filepath if json_result.get("success") else None,
+                    'txt_file': txt_filepath if txt_result.get("success") else None,
+                    'database_saved': db_result.get("success", False),
+                    'message': f'MCP를 통해 {success_count}개 파일이 저장되었습니다: {json_filename}',
+                    'method': 'mcp_filesystem_sqlite'
+                }
+            else:
+                # MCP 저장 실패 시 기존 방법으로 fallback
+                print("⚠️ MCP 저장 실패, 기존 방법으로 대체")
+                return self._save_processed_data(processed_data, user_request)
+                
+        except Exception as e:
+            print(f"❌ MCP 저장 오류: {e}")
+            # 오류 시 기존 저장 방법으로 fallback
+            return self._save_processed_data(processed_data, user_request)
+    
+    def _generate_text_summary(self, processed_data: Dict[str, Any], user_request: str) -> str:
+        """텍스트 요약 생성"""
+        summary_lines = [
+            "뉴스 스크래핑 결과 요약 (MCP 저장)",
+            "=" * 50,
+            f"요청: {user_request}",
+            f"처리 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"총 사이트 수: {processed_data['structured_data']['total_sites']}",
+            f"성공적 수집: {processed_data['structured_data']['successful_scrapes']}",
+            f"주요 카테고리: {list(processed_data['structured_data']['categories'].keys())}",
+            f"주요 키워드: {[kw for kw, freq in processed_data['structured_data']['keywords'][:10]]}",
+            "",
+            "주요 인사이트:",
+        ]
+        
+        for i, insight in enumerate(processed_data['insights'][:5], 1):
+            summary_lines.append(f"{i}. {insight}")
+        
+        # MCP 분석 결과 추가
+        if processed_data.get('ai_analysis', {}).get('keyword_chart'):
+            summary_lines.append("\n📊 MCP 분석 결과:")
+            summary_lines.append("- 키워드 빈도 차트 생성됨")
+        
+        if processed_data.get('ai_analysis', {}).get('category_chart'):
+            summary_lines.append("- 카테고리 분포 차트 생성됨")
+        
+        if processed_data.get('ai_analysis', {}).get('content_statistics'):
+            stats = processed_data['ai_analysis']['content_statistics']
+            summary_lines.append(f"- 콘텐츠 통계: 평균 {stats.get('average_words_per_summary', 0)} 단어/요약")
+        
+        return "\n".join(summary_lines)
 
     def _send_to_n8n(self, action_results: Dict[str, Any]) -> None:
         """n8n 웹훅으로 결과 전송"""

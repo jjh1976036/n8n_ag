@@ -1,14 +1,18 @@
 from autogen_core.models import ChatCompletionClient
 from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
 from typing import List, Dict, Any
+import asyncio
 from config.agent_config import AgentConfig
 from utils.claude_client import ClaudeChatCompletionClient
+from utils.mcp_client import MCPClientFactory
 
 class ProcessorAgent:
     """데이터 처리 에이전트"""
     
     def __init__(self):
         self.config = AgentConfig()
+        self.mcp_client = None
+        self._initialize_mcp()
         
         # Claude ChatCompletionClient 생성
         self.model_client = None
@@ -64,6 +68,19 @@ class ProcessorAgent:
             print(f"❌ 처리 에이전트 생성 실패: {e}")
             self.processor = None
             self.user_proxy = None
+    
+    def _initialize_mcp(self):
+        """MCP 클라이언트 초기화"""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self.mcp_client = loop.run_until_complete(
+                MCPClientFactory.create_client_for_agent("processor")
+            )
+            print("✅ ProcessorAgent MCP 클라이언트 초기화 성공")
+        except Exception as e:
+            print(f"⚠️ ProcessorAgent MCP 초기화 실패: {e}")
+            self.mcp_client = None
         
     def process_data(self, collected_data: Dict[str, Any]) -> Dict[str, Any]:
         """수집된 데이터 처리 및 분석"""
@@ -83,10 +100,17 @@ class ProcessorAgent:
         # 2. 인사이트 생성
         insights = self._generate_insights(structured_data)
         
-        # 3. AI 기반 추가 분석
+        # 3. MCP를 활용한 고급 분석
+        mcp_analysis = self._perform_mcp_analysis(structured_data) if self.mcp_client else {}
+        
+        # 4. AI 기반 추가 분석
         ai_analysis = self._perform_ai_analysis(structured_data, collected_data['data']['user_request'])
         
-        # 4. 처리 결과 통합
+        # 5. MCP 분석 결과와 AI 분석 결과 통합
+        if mcp_analysis:
+            ai_analysis.update(mcp_analysis)
+        
+        # 6. 처리 결과 통합
         processed_data = {
             'structured_data': structured_data,
             'insights': insights,
@@ -209,6 +233,94 @@ class ProcessorAgent:
         ai_analysis = self._rule_based_analysis(structured_data, user_request)
         
         return ai_analysis
+    
+    def _perform_mcp_analysis(self, structured_data: Dict[str, Any]) -> Dict[str, Any]:
+        """MCP를 활용한 고급 데이터 분석"""
+        mcp_analysis = {}
+        
+        if not self.mcp_client:
+            return mcp_analysis
+        
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # 1. 시각화 차트 생성 (키워드 분포)
+            if structured_data.get('keywords'):
+                keyword_data = [
+                    {"keyword": kw, "frequency": freq} 
+                    for kw, freq in structured_data['keywords'][:10]
+                ]
+                
+                chart_result = loop.run_until_complete(
+                    self.mcp_client.call_tool("chart", "create_chart", {
+                        "data": keyword_data,
+                        "chart_type": "bar",
+                        "options": {
+                            "title": "Top Keywords Frequency",
+                            "x_axis": "keyword",
+                            "y_axis": "frequency"
+                        }
+                    })
+                )
+                
+                if chart_result.get("success"):
+                    mcp_analysis["keyword_chart"] = chart_result.get("result", {})
+                    print("✅ MCP 키워드 차트 생성 성공")
+            
+            # 2. 카테고리 분포 차트 생성
+            if structured_data.get('categories'):
+                category_data = [
+                    {"category": cat, "count": count}
+                    for cat, count in structured_data['categories'].items()
+                ]
+                
+                pie_chart_result = loop.run_until_complete(
+                    self.mcp_client.call_tool("chart", "create_chart", {
+                        "data": category_data,
+                        "chart_type": "pie",
+                        "options": {
+                            "title": "Content Categories Distribution"
+                        }
+                    })
+                )
+                
+                if pie_chart_result.get("success"):
+                    mcp_analysis["category_chart"] = pie_chart_result.get("result", {})
+                    print("✅ MCP 카테고리 차트 생성 성공")
+            
+            # 3. 데이터를 파일에 임시 저장하여 SQLite 분석 수행
+            if structured_data.get('summaries'):
+                # SQLite 데이터베이스에 임시 데이터 저장 및 분석
+                analysis_result = loop.run_until_complete(
+                    self.mcp_client.call_tool("sqlite", "execute", {
+                        "query": """
+                        CREATE TEMPORARY TABLE IF NOT EXISTS temp_analysis (
+                            id INTEGER PRIMARY KEY,
+                            content TEXT,
+                            word_count INTEGER,
+                            char_count INTEGER
+                        )
+                        """
+                    })
+                )
+                
+                # 콘텐츠 통계 분석
+                total_words = sum(len(summary.split()) for summary in structured_data['summaries'])
+                avg_words = total_words / len(structured_data['summaries']) if structured_data['summaries'] else 0
+                
+                mcp_analysis["content_statistics"] = {
+                    "total_summaries": len(structured_data['summaries']),
+                    "total_words": total_words,
+                    "average_words_per_summary": round(avg_words, 2),
+                    "analysis_method": "mcp_sqlite"
+                }
+                print("✅ MCP SQLite 분석 완료")
+            
+        except Exception as e:
+            print(f"❌ MCP 분석 오류: {e}")
+        
+        return mcp_analysis
         
     def _rule_based_analysis(self, structured_data: Dict[str, Any], user_request: str) -> Dict[str, Any]:
         """규칙 기반 AI 분석"""

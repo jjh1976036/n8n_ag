@@ -2,16 +2,20 @@ from autogen_core.models import ChatCompletionClient
 from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
 import json
 import os
+import asyncio
 from datetime import datetime
 from typing import List, Dict, Any
 from config.agent_config import AgentConfig
 from utils.claude_client import ClaudeChatCompletionClient
+from utils.mcp_client import MCPClientFactory
 
 class ReporterAgent:
     """보고서 생성 에이전트"""
     
     def __init__(self):
         self.config = AgentConfig()
+        self.mcp_client = None
+        self._initialize_mcp()
         
         # Claude ChatCompletionClient 생성
         self.model_client = None
@@ -67,6 +71,19 @@ class ReporterAgent:
             print(f"❌ 보고서 에이전트 생성 실패: {e}")
             self.reporter = None
             self.user_proxy = None
+    
+    def _initialize_mcp(self):
+        """MCP 클라이언트 초기화"""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self.mcp_client = loop.run_until_complete(
+                MCPClientFactory.create_client_for_agent("reporter")
+            )
+            print("✅ ReporterAgent MCP 클라이언트 초기화 성공")
+        except Exception as e:
+            print(f"⚠️ ReporterAgent MCP 초기화 실패: {e}")
+            self.mcp_client = None
         
     def generate_report(self, collector_result: Dict[str, Any], processor_result: Dict[str, Any], action_result: Dict[str, Any], user_request: str) -> Dict[str, Any]:
         """전체 데이터를 바탕으로 최종 보고서 생성"""
@@ -84,16 +101,20 @@ class ReporterAgent:
         # 4. 최종 보고서 조합
         final_report = self._compile_final_report(report_content, user_request)
         
-        # 5. 보고서 파일 저장
+        # 5. MCP를 활용한 다중 채널 보고서 배포
+        distribution_results = self._distribute_with_mcp(final_report, integrated_data, user_request) if self.mcp_client else {}
+        
+        # 6. 기본 파일 저장 (백업)
         save_result = self._save_report(final_report, user_request)
         
         return {
             'status': 'success',
-            'message': '보고서 생성 및 저장이 완료되었습니다.',
+            'message': '보고서 생성 및 다중 채널 배포가 완료되었습니다.',
             'data': {
                 'report_content': final_report,
                 'saved_path': save_result.get('filepath', ''),
-                'file_size': save_result.get('file_size', 0)
+                'file_size': save_result.get('file_size', 0),
+                'distribution_results': distribution_results
             }
         }
         
@@ -151,6 +172,199 @@ class ReporterAgent:
                 'status': 'error',
                 'message': f'보고서 저장 실패: {str(e)}'
             }
+    
+    def _distribute_with_mcp(self, final_report: str, integrated_data: Dict[str, Any], user_request: str) -> Dict[str, Any]:
+        """MCP를 활용한 다중 채널 보고서 배포"""
+        distribution_results = {
+            'gmail': {'status': 'not_attempted'},
+            'slack': {'status': 'not_attempted'},
+            'notion': {'status': 'not_attempted'},
+            'chart_generation': {'status': 'not_attempted'},
+            'markdown_document': {'status': 'not_attempted'}
+        }
+        
+        if not self.mcp_client:
+            return distribution_results
+        
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # 1. Gmail로 보고서 전송
+            try:
+                email_subject = f"뉴스 분석 보고서: {user_request[:50]}..."
+                email_body = self._format_email_report(final_report, integrated_data)
+                
+                gmail_result = loop.run_until_complete(
+                    self.mcp_client.call_tool("gmail", "send_email", {
+                        "to": os.getenv("REPORT_EMAIL_RECIPIENT", "user@example.com"),
+                        "subject": email_subject,
+                        "body": email_body
+                    })
+                )
+                
+                distribution_results['gmail'] = {
+                    'status': 'success' if gmail_result.get('success') else 'failed',
+                    'message': gmail_result.get('message', 'Unknown error')
+                }
+                
+                if gmail_result.get('success'):
+                    print("✅ MCP Gmail 보고서 전송 성공")
+            except Exception as e:
+                distribution_results['gmail'] = {'status': 'error', 'message': str(e)}
+            
+            # 2. Slack으로 요약 알림 전송
+            try:
+                slack_message = self._format_slack_message(integrated_data, user_request)
+                
+                slack_result = loop.run_until_complete(
+                    self.mcp_client.call_tool("slack", "send_message", {
+                        "channel": os.getenv("SLACK_CHANNEL", "#general"),
+                        "message": slack_message
+                    })
+                )
+                
+                distribution_results['slack'] = {
+                    'status': 'success' if slack_result.get('success') else 'failed',
+                    'message': slack_result.get('message', 'Unknown error')
+                }
+                
+                if slack_result.get('success'):
+                    print("✅ MCP Slack 알림 전송 성공")
+            except Exception as e:
+                distribution_results['slack'] = {'status': 'error', 'message': str(e)}
+            
+            # 3. Notion에 문서 저장
+            try:
+                notion_result = loop.run_until_complete(
+                    self.mcp_client.call_tool("notion", "create_page", {
+                        "title": f"뉴스 분석: {user_request}",
+                        "content": final_report,
+                        "database_id": os.getenv("NOTION_DATABASE_ID", "")
+                    })
+                )
+                
+                distribution_results['notion'] = {
+                    'status': 'success' if notion_result.get('success') else 'failed',
+                    'message': notion_result.get('message', 'Unknown error')
+                }
+                
+                if notion_result.get('success'):
+                    print("✅ MCP Notion 문서 생성 성공")
+            except Exception as e:
+                distribution_results['notion'] = {'status': 'error', 'message': str(e)}
+            
+            # 4. 시각화 차트 생성 (요약용)
+            try:
+                if integrated_data.get('summary'):
+                    chart_data = [
+                        {"metric": "총 사이트", "value": integrated_data['summary']['total_sites']},
+                        {"metric": "성공 수집", "value": integrated_data['summary']['successful_scrapes']},
+                        {"metric": "카테고리", "value": integrated_data['summary']['categories_found']},
+                        {"metric": "키워드", "value": integrated_data['summary']['keywords_extracted']}
+                    ]
+                    
+                    chart_result = loop.run_until_complete(
+                        self.mcp_client.call_tool("chart", "create_chart", {
+                            "data": chart_data,
+                            "chart_type": "bar",
+                            "options": {
+                                "title": f"뉴스 분석 요약: {user_request[:30]}...",
+                                "x_axis": "metric",
+                                "y_axis": "value"
+                            }
+                        })
+                    )
+                    
+                    distribution_results['chart_generation'] = {
+                        'status': 'success' if chart_result.get('success') else 'failed',
+                        'chart_url': chart_result.get('result', {}).get('chart_url', ''),
+                        'message': chart_result.get('message', 'Unknown error')
+                    }
+                    
+                    if chart_result.get('success'):
+                        print("✅ MCP 요약 차트 생성 성공")
+            except Exception as e:
+                distribution_results['chart_generation'] = {'status': 'error', 'message': str(e)}
+            
+            # 5. Markdown 문서 생성
+            try:
+                markdown_content = self._format_markdown_report(final_report, integrated_data)
+                
+                markdown_result = loop.run_until_complete(
+                    self.mcp_client.call_tool("markdown", "create_document", {
+                        "title": f"뉴스분석_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                        "content": markdown_content
+                    })
+                )
+                
+                distribution_results['markdown_document'] = {
+                    'status': 'success' if markdown_result.get('success') else 'failed',
+                    'message': markdown_result.get('message', 'Unknown error')
+                }
+                
+                if markdown_result.get('success'):
+                    print("✅ MCP Markdown 문서 생성 성공")
+            except Exception as e:
+                distribution_results['markdown_document'] = {'status': 'error', 'message': str(e)}
+        
+        except Exception as e:
+            print(f"❌ MCP 배포 중 전체 오류: {e}")
+        
+        return distribution_results
+    
+    def _format_email_report(self, final_report: str, integrated_data: Dict[str, Any]) -> str:
+        """이메일용 보고서 포맷"""
+        email_content = [
+            f"뉴스 분석 보고서",
+            f"생성 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"",
+            f"📊 요약:",
+            f"- 분석 사이트: {integrated_data.get('summary', {}).get('total_sites', 0)}개",
+            f"- 성공 수집: {integrated_data.get('summary', {}).get('successful_scrapes', 0)}개",
+            f"- 발견 카테고리: {integrated_data.get('summary', {}).get('categories_found', 0)}개",
+            f"",
+            f"📝 상세 보고서:",
+            final_report[:1000] + "..." if len(final_report) > 1000 else final_report,
+            f"",
+            f"🤖 본 보고서는 AI 뉴스 분석 시스템에 의해 자동 생성되었습니다."
+        ]
+        return "\n".join(email_content)
+    
+    def _format_slack_message(self, integrated_data: Dict[str, Any], user_request: str) -> str:
+        """Slack용 메시지 포맷"""
+        summary = integrated_data.get('summary', {})
+        return f"""🗞️ 뉴스 분석 완료: *{user_request}*
+        
+📊 분석 결과:
+• 총 사이트: {summary.get('total_sites', 0)}개
+• 성공 수집: {summary.get('successful_scrapes', 0)}개  
+• 카테고리: {summary.get('categories_found', 0)}개
+• 키워드: {summary.get('keywords_extracted', 0)}개
+
+⏰ 완료 시간: {datetime.now().strftime('%H:%M:%S')}
+🤖 AI 분석 시스템"""
+    
+    def _format_markdown_report(self, final_report: str, integrated_data: Dict[str, Any]) -> str:
+        """Markdown용 보고서 포맷"""
+        summary = integrated_data.get('summary', {})
+        markdown_content = f"""# 뉴스 분석 보고서
+
+## 📊 분석 요약
+- **총 사이트 수**: {summary.get('total_sites', 0)}개
+- **성공 수집**: {summary.get('successful_scrapes', 0)}개
+- **발견 카테고리**: {summary.get('categories_found', 0)}개  
+- **추출 키워드**: {summary.get('keywords_extracted', 0)}개
+- **생성 시간**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## 📝 상세 보고서
+
+{final_report}
+
+---
+*본 보고서는 AI 뉴스 분석 시스템에 의해 자동 생성되었습니다.*
+"""
+        return markdown_content
         
     def _create_report_structure(self, integrated_data: Dict[str, Any], user_request: str) -> Dict[str, Any]:
         """보고서 구조 생성"""

@@ -9,6 +9,7 @@ Claude API와 AutoGen을 활용하여 사용자가 입력한 키워드나 주제
 - 🤖 **4개 전문 에이전트 협업**: 수집 → 분석 → 저장 → 보고서 생성
 - 💬 **직관적인 채팅 인터페이스**: 자연어로 뉴스 주제 입력
 - 🧠 **Claude API 기반**: 고품질 AI 분석 및 인사이트 생성
+- 🔗 **MCP 통합**: Model Context Protocol을 통한 외부 서비스 연동
 - 📊 **자동 파일 저장**: JSON + 텍스트 형태로 결과 보관
 - ⚡ **실시간 진행 상황**: 각 단계별 처리 상태 표시
 
@@ -16,23 +17,23 @@ Claude API와 AutoGen을 활용하여 사용자가 입력한 키워드나 주제
 
 1. **CollectorAgent** 🔍: 웹 정보 수집 전문가
    - 키워드 기반 웹사이트 검색
-   - 관련 뉴스 기사 스크래핑
-   - 데이터 구조화 및 관련성 평가
+   - MCP Firecrawl을 통한 고급 웹 스크래핑
+   - 웹 검색 API를 통한 관련 정보 수집
 
 2. **ProcessorAgent** 🔧: 데이터 분석 및 처리 전문가
    - 수집된 데이터 분석 및 정리
-   - 키워드 추출 및 카테고리 분류
-   - AI 기반 인사이트 생성
+   - MCP 차트 생성을 통한 데이터 시각화
+   - SQLite MCP를 통한 데이터베이스 분석
 
 3. **ActionAgent** 💾: 행동 실행 및 저장 전문가
-   - 처리된 데이터 파일 저장
+   - MCP 파일시스템을 통한 안전한 데이터 저장
+   - SQLite 메타데이터 관리
    - 행동 계획 수립 및 실행
-   - 결과 평가 및 분석
 
 4. **ReporterAgent** 📝: 보고서 생성 전문가
-   - 종합 분석 보고서 작성
-   - 사용자 친화적 요약 생성
-   - 다양한 형태로 결과 출력
+   - Gmail, Slack, Notion을 통한 다중 채널 배포
+   - 차트와 시각화가 포함된 리치 보고서
+   - Markdown 형식의 구조화된 문서 생성
 
 ## 🚀 빠른 시작
 
@@ -71,6 +72,16 @@ python test_simple.py
 - ✅ 파일 저장 기능 테스트
 - ✅ 에러 핸들링 확인
 
+#### 🔗 **2.5단계: MCP 통합 테스트**
+```bash
+python test_mcp.py
+```
+**확인 항목:**
+- ✅ MCP 서버 설정 및 연결 상태
+- ✅ 각 에이전트별 MCP 기능 테스트
+- ✅ 전체 MCP 워크플로우 검증
+- ✅ Mock 모드 fallback 확인
+
 #### 🚀 **3단계: 실제 애플리케이션 테스트**
 ```bash
 python chat_main.py
@@ -81,7 +92,14 @@ python chat_main.py
 - `삼성전자 주가 관련 최신 뉴스` (복잡한 요청)
 - `quit` (종료 테스트)
 
-### 3. 실제 사용
+### 3. MCP 서버 관리 (선택사항)
+
+```bash
+# MCP 서버 시작 및 관리
+python mcp_launcher.py
+```
+
+### 4. 실제 사용
 
 ```bash
 # 메인 애플리케이션 실행
@@ -222,18 +240,23 @@ pip install webdriver-manager
 ├── run_chat.py               # 실행 스크립트
 ├── test_setup.py             # 환경 설정 테스트
 ├── test_simple.py            # 기능 테스트 (Mock)
+├── test_mcp.py               # MCP 통합 테스트
+├── mcp_launcher.py           # MCP 서버 관리 도구
+├── mcp_config.py             # MCP 서버 설정
+├── MCP_SETUP.md              # MCP 설정 가이드
 ├── TESTING_GUIDE.md          # 상세 테스트 가이드
 ├── CHAT_USAGE.md             # 채팅 사용법 가이드
 ├── requirements.txt          # 의존성 목록
 ├── .env                      # 환경변수 (생성 필요)
 ├── env_example.txt           # 환경변수 예시
 ├── agents/
-│   ├── collector_agent.py    # 정보 수집 에이전트
-│   ├── processor_agent.py    # 데이터 처리 에이전트
-│   ├── action_agent.py       # 행동 수행 에이전트
-│   └── reporter_agent.py     # 보고 에이전트
+│   ├── collector_agent.py    # 정보 수집 에이전트 (+ MCP)
+│   ├── processor_agent.py    # 데이터 처리 에이전트 (+ MCP)
+│   ├── action_agent.py       # 행동 수행 에이전트 (+ MCP)
+│   └── reporter_agent.py     # 보고 에이전트 (+ MCP)
 ├── utils/
 │   ├── claude_client.py      # Claude API 클라이언트
+│   ├── mcp_client.py         # MCP 클라이언트 구현
 │   ├── web_scraper.py        # 웹 스크래핑 유틸리티
 │   └── data_processor.py     # 데이터 처리 유틸리티
 ├── config/
@@ -247,40 +270,49 @@ pip install webdriver-manager
 
 - ✅ 실시간 채팅 인터페이스
 - ✅ 4단계 에이전트 워크플로우
-- ✅ 자동 웹 스크래핑 및 데이터 수집
+- ✅ MCP 통합을 통한 외부 서비스 연동
+- ✅ 자동 웹 스크래핑 및 데이터 수집 (Firecrawl MCP)
 - ✅ AI 기반 내용 분석 및 인사이트 생성
+- ✅ 데이터 시각화 및 차트 생성 (Chart MCP)
+- ✅ 다중 채널 보고서 배포 (Gmail, Slack, Notion MCP)
 - ✅ 결과 파일 자동 저장 (JSON + 텍스트)
 - ✅ 사용자 친화적인 진행 상황 표시
 - ✅ 오류 처리 및 복구 메커니즘
 
 ## 🔍 상세 문서
 
+- [MCP 설정 가이드](MCP_SETUP.md): MCP 통합 및 설정 방법
 - [테스트 가이드](TESTING_GUIDE.md): 상세한 테스트 방법
 - [채팅 사용법](CHAT_USAGE.md): 채팅 인터페이스 사용법
 - [설정 가이드](config/agent_config.py): 에이전트 설정 옵션
 
 ## 💡 사용 팁
 
-- **점진적 테스트**: 환경 설정 → 기능 테스트 → 실제 실행 순서로 진행
+- **점진적 테스트**: 환경 설정 → 기능 테스트 → MCP 테스트 → 실제 실행 순서로 진행
+- **MCP 서비스**: API 키가 없어도 Mock 모드로 모든 기능 테스트 가능
 - **키워드 선택**: 구체적이고 명확한 키워드 사용 권장
 - **결과 확인**: 생성된 보고서 파일의 내용과 형식 검토
 - **API 사용량**: Anthropic 콘솔에서 API 사용량 모니터링
 
 ## 🚀 다음 단계
 
-1. **환경 설정**: `.env` 파일에 Anthropic API 키 설정
-2. **테스트 실행**: `python test_setup.py` → `python test_simple.py`
-3. **실제 사용**: `python chat_main.py`
-4. **결과 확인**: `saved_reports/`와 `reports/` 디렉토리의 파일들 검토
+1. **환경 설정**: `.env` 파일에 Anthropic API 키 설정 
+2. **테스트 실행**: `python test_setup.py` → `python test_simple.py` → `python test_mcp.py`
+3. **MCP 관리**: `python mcp_launcher.py` (선택사항)
+4. **실제 사용**: `python chat_main.py`
+5. **결과 확인**: `saved_reports/`와 `reports/` 디렉토리의 파일들 검토
 
 ## 🎉 결론
 
-현재 시스템은 완전히 작동하는 상태로, Claude API를 통한 고품질 뉴스 분석과 AutoGen 에이전트들의 협업을 통해 사용자에게 종합적인 뉴스 정보를 제공합니다.
+현재 시스템은 완전히 작동하는 상태로, Claude API를 통한 고품질 뉴스 분석과 AutoGen 에이전트들의 협업, 그리고 MCP를 통한 외부 서비스 연동을 통해 사용자에게 종합적인 뉴스 정보를 제공합니다.
 
 **주요 성과:**
 - ✅ OpenAI → Claude API 완전 전환
+- ✅ MCP (Model Context Protocol) 통합으로 외부 서비스 연동
 - ✅ 채팅 기반 사용자 인터페이스 구현
 - ✅ 4-에이전트 협업 워크플로우 완성
+- ✅ 다중 채널 보고서 배포 (Gmail, Slack, Notion)
+- ✅ 데이터 시각화 및 고급 분석 기능
 - ✅ 자동 파일 저장 및 보고서 생성
 - ✅ 포괄적인 테스트 시스템 구축
 

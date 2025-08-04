@@ -1,9 +1,11 @@
 from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
 from autogen_core.models import ChatCompletionClient
 from typing import List, Dict, Any
+import asyncio
 from utils.web_scraper import WebScraper
 from config.agent_config import AgentConfig
 from utils.claude_client import ClaudeChatCompletionClient
+from utils.mcp_client import MCPClientFactory
 
 class CollectorAgent:
     """웹 정보 수집 에이전트"""
@@ -11,6 +13,8 @@ class CollectorAgent:
     def __init__(self):
         self.config = AgentConfig()
         self.scraper = WebScraper()
+        self.mcp_client = None
+        self._initialize_mcp()
         
         # Claude ChatCompletionClient 생성
         self.model_client = None
@@ -66,6 +70,20 @@ class CollectorAgent:
             print(f"❌ 에이전트 생성 실패: {e}")
             self.collector = None
             self.user_proxy = None
+    
+    def _initialize_mcp(self):
+        """MCP 클라이언트 초기화"""
+        try:
+            # 비동기 MCP 클라이언트 초기화를 위한 이벤트 루프 처리
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self.mcp_client = loop.run_until_complete(
+                MCPClientFactory.create_client_for_agent("collector")
+            )
+            print("✅ CollectorAgent MCP 클라이언트 초기화 성공")
+        except Exception as e:
+            print(f"⚠️ CollectorAgent MCP 초기화 실패: {e}")
+            self.mcp_client = None
         
     def collect_information(self, user_request: str) -> Dict[str, Any]:
         """사용자 요청에 따른 정보 수집"""
@@ -75,20 +93,22 @@ class CollectorAgent:
         search_query = self._generate_search_query(user_request)
         print(f"📝 검색 쿼리 생성: {search_query}")
         
-        # 2. 웹사이트 URL 수집
-        urls = self.scraper.search_websites(search_query, max_results=5)
-        print(f"🌐 발견된 URL 수: {len(urls)}")
+        # 2. MCP를 활용한 웹 검색 및 스크래핑 시도
+        mcp_data = self._collect_with_mcp(search_query) if self.mcp_client else []
         
-        if not urls:
-            return {
-                'status': 'error',
-                'message': '관련 웹사이트를 찾을 수 없습니다.',
-                'data': []
-            }
+        # 3. 기존 웹 스크래퍼를 사용한 백업 수집
+        fallback_data = []
+        if not mcp_data or len(mcp_data) < 3:
+            urls = self.scraper.search_websites(search_query, max_results=5)
+            print(f"🌐 발견된 URL 수: {len(urls)}")
             
-        # 3. 웹사이트 스크래핑
-        scraped_data = self.scraper.scrape_multiple_sites(urls)
-        print(f"📊 스크래핑 완료: {len(scraped_data)}개 사이트")
+            if urls:
+                fallback_data = self.scraper.scrape_multiple_sites(urls)
+                print(f"📊 기존 스크래핑 완료: {len(fallback_data)}개 사이트")
+        
+        # 4. MCP 데이터와 기존 데이터 결합
+        scraped_data = mcp_data + fallback_data
+        print(f"📈 총 수집된 데이터: {len(scraped_data)}개")
         
         # 4. 데이터 정리 및 구조화
         structured_data = self._structure_collected_data(scraped_data, user_request)
@@ -116,6 +136,63 @@ class CollectorAgent:
         # 여기서는 간단한 키워드 추출로 대체
         keywords = self._extract_keywords(user_request)
         return " ".join(keywords)
+    
+    def _collect_with_mcp(self, search_query: str) -> List[Dict[str, Any]]:
+        """MCP를 활용한 고급 웹 데이터 수집"""
+        collected_data = []
+        
+        if not self.mcp_client:
+            return collected_data
+        
+        try:
+            # 1. 웹 검색 MCP 서버 사용
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # 웹 검색 실행
+            search_result = loop.run_until_complete(
+                self.mcp_client.call_tool("web_search", "search", {
+                    "query": search_query,
+                    "num_results": 10
+                })
+            )
+            
+            if search_result.get("success"):
+                search_results = search_result.get("result", {}).get("results", [])
+                print(f"🔍 MCP 웹 검색 결과: {len(search_results)}개")
+                
+                # 2. 상위 결과들을 Firecrawl로 스크래핑
+                for result in search_results[:5]:  # 상위 5개만 스크래핑
+                    url = result.get("url", "")
+                    if url:
+                        scrape_result = loop.run_until_complete(
+                            self.mcp_client.call_tool("firecrawl", "scrape_url", {
+                                "url": url,
+                                "options": {
+                                    "formats": ["markdown", "html"],
+                                    "onlyMainContent": True
+                                }
+                            })
+                        )
+                        
+                        if scrape_result.get("success"):
+                            content_data = scrape_result.get("result", {})
+                            collected_data.append({
+                                "status": "success",
+                                "url": url,
+                                "title": result.get("title", ""),
+                                "content": content_data.get("content", ""),
+                                "metadata": content_data.get("metadata", {}),
+                                "source": "mcp_firecrawl"
+                            })
+                            print(f"✅ MCP 스크래핑 성공: {url[:50]}...")
+                        else:
+                            print(f"⚠️ MCP 스크래핑 실패: {url}")
+            
+        except Exception as e:
+            print(f"❌ MCP 데이터 수집 오류: {e}")
+        
+        return collected_data
         
     def _extract_keywords(self, text: str) -> List[str]:
         """텍스트에서 주요 키워드 추출"""
@@ -189,6 +266,15 @@ class CollectorAgent:
     def cleanup(self):
         """리소스 정리"""
         self.scraper.close_selenium()
+        
+        # MCP 클라이언트 정리
+        if self.mcp_client:
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(self.mcp_client.cleanup())
+            except Exception as e:
+                print(f"⚠️ MCP 클라이언트 정리 중 오류: {e}")
         
     def get_agent_info(self) -> Dict[str, Any]:
         """에이전트 정보 반환"""

@@ -11,4 +11,6 @@ flask-cors==4.0.0
 # pandas>=2.2.0  # Windows 컴파일 문제로 제거
 numpy>=1.26.0
 # lxml==4.9.3    # Windows 컴파일 문제로 제거
-webdriver-manager==4.0.1 
+webdriver-manager==4.0.1
+# MCP (Model Context Protocol) 관련 패키지
+mcp>=1.0.0 
