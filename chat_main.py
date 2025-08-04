@@ -6,6 +6,7 @@ import os
 import sys
 from datetime import datetime
 from typing import Dict, Any
+from pathlib import Path
 
 # 현재 디렉토리를 Python 경로에 추가
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -21,6 +22,10 @@ class NewsScrapingChatApp:
     """뉴스 스크래핑 채팅 애플리케이션"""
     
     def __init__(self):
+        # 환경 설정 확인
+        if not self.check_environment():
+            return
+            
         self.config = AgentConfig()
         
         # 에이전트 초기화
@@ -34,6 +39,100 @@ class NewsScrapingChatApp:
         except Exception as e:
             print(f"❌ 에이전트 초기화 실패: {e}")
             sys.exit(1)
+    
+    def check_environment(self) -> bool:
+        """환경 설정 확인 및 대화형 설정 제안"""
+        env_file = Path(".env")
+        
+        # .env 파일이 없는 경우
+        if not env_file.exists():
+            print("⚠️ .env 파일을 찾을 수 없습니다.")
+            return self.prompt_interactive_setup()
+        
+        # Claude API 키 확인
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        if not anthropic_key or anthropic_key in ["YOUR_ANTHROPIC_API_KEY", "your_anthropic_api_key"]:
+            print("⚠️ Claude API 키가 설정되지 않았습니다.")
+            return self.prompt_interactive_setup()
+        
+        # API 키 형식 확인
+        if not anthropic_key.startswith("sk-ant-api"):
+            print("⚠️ Claude API 키 형식이 올바르지 않습니다.")
+            return self.prompt_interactive_setup()
+        
+        return True
+    
+    def prompt_interactive_setup(self) -> bool:
+        """대화형 설정 제안"""
+        print("\n🔧 환경 설정이 필요합니다!")
+        print("=" * 40)
+        print("📋 이 시스템을 사용하려면 Claude API 키가 필요합니다.")
+        print("💡 대화형 설정 도구를 사용하여 쉽게 설정할 수 있습니다.")
+        print()
+        
+        choice = input("🤔 대화형 설정을 시작하시겠습니까? (Y/n): ").strip().lower()
+        
+        if choice in ['', 'y', 'yes', 'ㅇ']:
+            try:
+                # 대화형 설정 실행
+                from interactive_setup import InteractiveSetup
+                setup = InteractiveSetup()
+                
+                print("\n⚡ 빠른 설정을 진행합니다...")
+                if setup.quick_setup():
+                    print("\n✅ 설정이 완료되었습니다!")
+                    
+                    # 환경 변수 다시 로드
+                    self.reload_environment()
+                    
+                    # 설정 완료 후 계속 진행할지 묻기
+                    continue_choice = input("\n🚀 지금 바로 애플리케이션을 시작하시겠습니까? (Y/n): ").strip().lower()
+                    if continue_choice in ['', 'y', 'yes', 'ㅇ']:
+                        return True
+                    else:
+                        print("👋 나중에 python chat_main.py로 다시 실행하세요.")
+                        return False
+                else:
+                    print("❌ 설정이 취소되었습니다.")
+                    return False
+                    
+            except ImportError:
+                print("❌ 대화형 설정 도구를 찾을 수 없습니다.")
+                self.show_manual_setup_guide()
+                return False
+            except Exception as e:
+                print(f"❌ 설정 중 오류 발생: {e}")
+                self.show_manual_setup_guide()
+                return False
+        else:
+            self.show_manual_setup_guide()
+            return False
+    
+    def reload_environment(self):
+        """환경 변수 다시 로드"""
+        try:
+            if Path(".env").exists():
+                with open(".env", 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#') and '=' in line:
+                            key, value = line.split('=', 1)
+                            os.environ[key.strip()] = value.strip()
+        except Exception as e:
+            print(f"⚠️ 환경 변수 재로드 중 오류: {e}")
+    
+    def show_manual_setup_guide(self):
+        """수동 설정 가이드 표시"""
+        print("\n📋 수동 설정 방법:")
+        print("=" * 30)
+        print("1. .env 파일을 생성하거나 편집하세요")
+        print("2. 다음 내용을 추가하세요:")
+        print("   ANTHROPIC_API_KEY=sk-ant-api03-YOUR_ACTUAL_API_KEY")
+        print("3. https://console.anthropic.com/ 에서 API 키를 발급받으세요")
+        print("4. python chat_main.py로 다시 실행하세요")
+        print()
+        print("💡 또는 다음 명령으로 대화형 설정을 실행하세요:")
+        print("   python interactive_setup.py")
     
     def display_welcome(self):
         """환영 메시지 출력"""
@@ -244,7 +343,17 @@ def main():
     """메인 함수"""
     try:
         app = NewsScrapingChatApp()
-        asyncio.run(app.run())
+        
+        # 환경 설정 확인 후 진행
+        if hasattr(app, 'config'):  # 환경 설정이 성공한 경우에만 config가 존재
+            asyncio.run(app.run())
+        else:
+            print("❌ 환경 설정이 완료되지 않아 애플리케이션을 시작할 수 없습니다.")
+            sys.exit(1)
+            
+    except KeyboardInterrupt:
+        print("\n\n👋 애플리케이션이 중단되었습니다.")
+        sys.exit(0)
     except Exception as e:
         print(f"❌ 애플리케이션 실행 실패: {e}")
         sys.exit(1)

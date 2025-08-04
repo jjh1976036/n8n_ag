@@ -39,6 +39,16 @@ Claude API와 AutoGen을 활용하여 사용자가 입력한 키워드나 주제
 
 ### 1. 환경 설정
 
+#### 🎯 방법 1: 대화형 설정 (권장)
+```bash
+# 설정 마법사 실행
+python setup_wizard.py
+
+# 또는 직접 대화형 설정 실행
+python interactive_setup.py
+```
+
+#### 📝 방법 2: 수동 설정
 ```bash
 # 1. 환경변수 파일 생성
 cp env_example.txt .env
@@ -48,6 +58,12 @@ cp env_example.txt .env
 
 # 3. 필요한 패키지 설치
 pip install -r requirements.txt
+```
+
+#### ⚡ 방법 3: 자동 설정 (애플리케이션 실행 시)
+```bash
+# 애플리케이션 실행하면 자동으로 설정 안내
+python chat_main.py
 ```
 
 ### 2. 시스템 테스트 (권장)
@@ -236,7 +252,9 @@ pip install webdriver-manager
 ## 📂 프로젝트 구조
 
 ```
-├── chat_main.py              # 메인 채팅 애플리케이션
+├── chat_main.py              # 메인 채팅 애플리케이션 (자동 환경 설정 포함)
+├── setup_wizard.py           # 환경 설정 마법사
+├── interactive_setup.py      # 대화형 환경 설정 도구
 ├── run_chat.py               # 실행 스크립트
 ├── test_setup.py             # 환경 설정 테스트
 ├── test_simple.py            # 기능 테스트 (Mock)
@@ -247,7 +265,7 @@ pip install webdriver-manager
 ├── TESTING_GUIDE.md          # 상세 테스트 가이드
 ├── CHAT_USAGE.md             # 채팅 사용법 가이드
 ├── requirements.txt          # 의존성 목록
-├── .env                      # 환경변수 (생성 필요)
+├── .env                      # 환경변수 (자동 생성)
 ├── env_example.txt           # 환경변수 예시
 ├── agents/
 │   ├── collector_agent.py    # 정보 수집 에이전트 (+ MCP)
@@ -268,6 +286,8 @@ pip install webdriver-manager
 
 ## 🎯 주요 기능
 
+- ✅ **대화형 환경 설정**: 사용자 친화적인 설정 마법사
+- ✅ **자동 설정 감지**: 실행 시 환경 확인 및 설정 안내
 - ✅ 실시간 채팅 인터페이스
 - ✅ 4단계 에이전트 워크플로우
 - ✅ MCP 통합을 통한 외부 서비스 연동
