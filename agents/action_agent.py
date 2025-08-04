@@ -2,8 +2,11 @@ from autogen_core.models import ChatCompletionClient
 from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
 import requests
 import json
+import os
+from datetime import datetime
 from typing import List, Dict, Any
 from config.agent_config import AgentConfig
+from utils.claude_client import ClaudeChatCompletionClient
 
 class ActionAgent:
     """행동 실행 에이전트"""
@@ -11,44 +14,35 @@ class ActionAgent:
     def __init__(self):
         self.config = AgentConfig()
         
-        # ChatCompletionClient 생성 - 올바른 API 사용
+        # Claude ChatCompletionClient 생성
         self.model_client = None
         
-        # 방법 1: OpenAIChatCompletionClient 시도
         try:
-            from autogen_ext.models.openai import OpenAIChatCompletionClient
-            self.model_client = OpenAIChatCompletionClient(
-                model=self.config.OPENAI_MODEL,
-                api_key=self.config.OPENAI_API_KEY,
-                base_url="https://api.openai.com/v1"
+            self.model_client = ClaudeChatCompletionClient(
+                model=self.config.CLAUDE_MODEL,
+                api_key=self.config.ANTHROPIC_API_KEY
             )
-            print("✅ OpenAIChatCompletionClient 생성 성공")
-        except ImportError as e:
-            print(f"⚠️ autogen_ext.models.openai import 실패: {e}")
-            print("💡 tiktoken 패키지가 필요할 수 있습니다.")
+            print("✅ Claude ChatCompletionClient 생성 성공")
         except Exception as e:
-            print(f"⚠️ OpenAIChatCompletionClient 생성 실패: {e}")
-        
-        # 방법 2: 모의 클라이언트 사용 (fallback)
-        if self.model_client is None:
+            print(f"⚠️ Claude ChatCompletionClient 생성 실패: {e}")
             print("⚠️ 모의 모델 클라이언트를 사용합니다...")
             
             class MockChatCompletionClient:
-                def __init__(self, model, api_key, base_url):
+                def __init__(self, model, api_key):
                     self.model = model
                     self.api_key = api_key
-                    self.base_url = base_url
                 
-                def create(self, messages, **kwargs):
-                    return {"choices": [{"message": {"content": "Mock response"}}]}
-                
-                def create_stream(self, messages, **kwargs):
-                    return iter([{"choices": [{"message": {"content": "Mock stream"}}]}])
+                async def create(self, messages, **kwargs):
+                    from autogen_core.models import CreateResult, RequestUsage
+                    return CreateResult(
+                        content="Mock response from Claude",
+                        finish_reason="stop",
+                        usage=RequestUsage(prompt_tokens=0, completion_tokens=10)
+                    )
             
             self.model_client = MockChatCompletionClient(
-                model=self.config.OPENAI_MODEL,
-                api_key=self.config.OPENAI_API_KEY,
-                base_url="https://api.openai.com/v1"
+                model=self.config.CLAUDE_MODEL,
+                api_key=self.config.ANTHROPIC_API_KEY
             )
             print("✅ 모의 모델 클라이언트 생성 성공")
         
@@ -75,7 +69,7 @@ class ActionAgent:
             self.action_agent = None
             self.user_proxy = None
         
-    def execute_actions(self, processed_data: Dict[str, Any], user_request: str) -> Dict[str, Any]:
+    def execute_action(self, processed_data: Dict[str, Any], user_request: str) -> Dict[str, Any]:
         """처리된 데이터를 바탕으로 행동 수행"""
         print(f"🚀 행동 실행 시작")
         
@@ -95,17 +89,21 @@ class ActionAgent:
         # 3. 결과 평가
         action_results = self._evaluate_actions(executed_actions, user_request)
         
-        # 4. n8n 웹훅 전송 (선택적)
+        # 4. 데이터 저장
+        save_result = self._save_processed_data(processed_data['data'], user_request)
+        
+        # 5. n8n 웹훅 전송 (선택적)
         if self.config.N8N_WEBHOOK_URL:
             self._send_to_n8n(action_results)
             
         return {
             'status': 'success',
-            'message': f'{len(executed_actions)}개의 행동을 수행했습니다.',
+            'message': f'{len(executed_actions)}개의 행동을 수행하고 데이터를 저장했습니다.',
             'data': {
                 'action_plan': action_plan,
                 'executed_actions': executed_actions,
-                'action_results': action_results
+                'action_results': action_results,
+                'save_result': save_result
             }
         }
         
@@ -426,6 +424,69 @@ class ActionAgent:
         else:
             return 'low'
             
+    def _save_processed_data(self, processed_data: Dict[str, Any], user_request: str) -> Dict[str, Any]:
+        """처리된 데이터를 파일로 저장"""
+        try:
+            # 저장 디렉토리 생성
+            save_dir = "saved_reports"
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir)
+            
+            # 파일명 생성 (타임스탬프 + 사용자 요청 키워드)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # 사용자 요청에서 안전한 파일명 생성
+            safe_request = "".join(c for c in user_request if c.isalnum() or c in (' ', '-', '_')).rstrip()
+            safe_request = safe_request[:30]  # 파일명 길이 제한
+            filename = f"report_{timestamp}_{safe_request}.json"
+            filepath = os.path.join(save_dir, filename)
+            
+            # 저장할 데이터 구성
+            save_data = {
+                'timestamp': datetime.now().isoformat(),
+                'user_request': user_request,
+                'processed_data': processed_data,
+                'metadata': {
+                    'total_sites_processed': processed_data['structured_data']['total_sites'],
+                    'successful_scrapes': processed_data['structured_data']['successful_scrapes'],
+                    'categories_found': len(processed_data['structured_data']['categories']),
+                    'keywords_extracted': len(processed_data['structured_data']['keywords'])
+                }
+            }
+            
+            # JSON 파일로 저장
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(save_data, f, ensure_ascii=False, indent=2)
+            
+            # 간단한 텍스트 요약도 저장
+            txt_filename = f"summary_{timestamp}_{safe_request}.txt"
+            txt_filepath = os.path.join(save_dir, txt_filename)
+            
+            with open(txt_filepath, 'w', encoding='utf-8') as f:
+                f.write(f"뉴스 스크래핑 결과 요약\n")
+                f.write(f"="*50 + "\n")
+                f.write(f"요청: {user_request}\n")
+                f.write(f"처리 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"총 사이트 수: {processed_data['structured_data']['total_sites']}\n")
+                f.write(f"성공적 수집: {processed_data['structured_data']['successful_scrapes']}\n")
+                f.write(f"주요 카테고리: {list(processed_data['structured_data']['categories'].keys())}\n")
+                f.write(f"주요 키워드: {[kw for kw, freq in processed_data['structured_data']['keywords'][:10]]}\n")
+                f.write(f"\n주요 인사이트:\n")
+                for i, insight in enumerate(processed_data['insights'][:5], 1):
+                    f.write(f"{i}. {insight}\n")
+            
+            return {
+                'status': 'success',
+                'json_file': filepath,
+                'txt_file': txt_filepath,
+                'message': f'데이터가 성공적으로 저장되었습니다: {filename}'
+            }
+            
+        except Exception as e:
+            return {
+                'status': 'error',
+                'message': f'데이터 저장 실패: {str(e)}'
+            }
+
     def _send_to_n8n(self, action_results: Dict[str, Any]) -> None:
         """n8n 웹훅으로 결과 전송"""
         try:

@@ -6,9 +6,9 @@ load_dotenv()
 class AgentConfig:
     """에이전트 설정 클래스"""
     
-    # OpenAI 설정
-    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-    OPENAI_MODEL = "gpt-4"
+    # Claude 설정
+    ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+    CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
     
     # n8n 설정
     N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL')

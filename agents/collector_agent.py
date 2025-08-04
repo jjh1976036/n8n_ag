@@ -3,6 +3,7 @@ from autogen_core.models import ChatCompletionClient
 from typing import List, Dict, Any
 from utils.web_scraper import WebScraper
 from config.agent_config import AgentConfig
+from utils.claude_client import ClaudeChatCompletionClient
 
 class CollectorAgent:
     """웹 정보 수집 에이전트"""
@@ -11,44 +12,35 @@ class CollectorAgent:
         self.config = AgentConfig()
         self.scraper = WebScraper()
         
-        # ChatCompletionClient 생성 - 올바른 API 사용
+        # Claude ChatCompletionClient 생성
         self.model_client = None
         
-        # 방법 1: OpenAIChatCompletionClient 시도
         try:
-            from autogen_ext.models.openai import OpenAIChatCompletionClient
-            self.model_client = OpenAIChatCompletionClient(
-                model=self.config.OPENAI_MODEL,
-                api_key=self.config.OPENAI_API_KEY,
-                base_url="https://api.openai.com/v1"
+            self.model_client = ClaudeChatCompletionClient(
+                model=self.config.CLAUDE_MODEL,
+                api_key=self.config.ANTHROPIC_API_KEY
             )
-            print("✅ OpenAIChatCompletionClient 생성 성공")
-        except ImportError as e:
-            print(f"⚠️ autogen_ext.models.openai import 실패: {e}")
-            print("💡 tiktoken 패키지가 필요할 수 있습니다.")
+            print("✅ Claude ChatCompletionClient 생성 성공")
         except Exception as e:
-            print(f"⚠️ OpenAIChatCompletionClient 생성 실패: {e}")
-        
-        # 방법 2: 모의 클라이언트 사용 (fallback)
-        if self.model_client is None:
+            print(f"⚠️ Claude ChatCompletionClient 생성 실패: {e}")
             print("⚠️ 모의 모델 클라이언트를 사용합니다...")
             
             class MockChatCompletionClient:
-                def __init__(self, model, api_key, base_url):
+                def __init__(self, model, api_key):
                     self.model = model
                     self.api_key = api_key
-                    self.base_url = base_url
                 
-                def create(self, messages, **kwargs):
-                    return {"choices": [{"message": {"content": "Mock response"}}]}
-                
-                def create_stream(self, messages, **kwargs):
-                    return iter([{"choices": [{"message": {"content": "Mock stream"}}]}])
+                async def create(self, messages, **kwargs):
+                    from autogen_core.models import CreateResult, RequestUsage
+                    return CreateResult(
+                        content="Mock response from Claude",
+                        finish_reason="stop",
+                        usage=RequestUsage(prompt_tokens=0, completion_tokens=10)
+                    )
             
             self.model_client = MockChatCompletionClient(
-                model=self.config.OPENAI_MODEL,
-                api_key=self.config.OPENAI_API_KEY,
-                base_url="https://api.openai.com/v1"
+                model=self.config.CLAUDE_MODEL,
+                api_key=self.config.ANTHROPIC_API_KEY
             )
             print("✅ 모의 모델 클라이언트 생성 성공")
         

@@ -1,8 +1,11 @@
 from autogen_core.models import ChatCompletionClient
 from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
 import json
+import os
+from datetime import datetime
 from typing import List, Dict, Any
 from config.agent_config import AgentConfig
+from utils.claude_client import ClaudeChatCompletionClient
 
 class ReporterAgent:
     """보고서 생성 에이전트"""
@@ -10,44 +13,35 @@ class ReporterAgent:
     def __init__(self):
         self.config = AgentConfig()
         
-        # ChatCompletionClient 생성 - 올바른 API 사용
+        # Claude ChatCompletionClient 생성
         self.model_client = None
         
-        # 방법 1: OpenAIChatCompletionClient 시도
         try:
-            from autogen_ext.models.openai import OpenAIChatCompletionClient
-            self.model_client = OpenAIChatCompletionClient(
-                model=self.config.OPENAI_MODEL,
-                api_key=self.config.OPENAI_API_KEY,
-                base_url="https://api.openai.com/v1"
+            self.model_client = ClaudeChatCompletionClient(
+                model=self.config.CLAUDE_MODEL,
+                api_key=self.config.ANTHROPIC_API_KEY
             )
-            print("✅ OpenAIChatCompletionClient 생성 성공")
-        except ImportError as e:
-            print(f"⚠️ autogen_ext.models.openai import 실패: {e}")
-            print("💡 tiktoken 패키지가 필요할 수 있습니다.")
+            print("✅ Claude ChatCompletionClient 생성 성공")
         except Exception as e:
-            print(f"⚠️ OpenAIChatCompletionClient 생성 실패: {e}")
-        
-        # 방법 2: 모의 클라이언트 사용 (fallback)
-        if self.model_client is None:
+            print(f"⚠️ Claude ChatCompletionClient 생성 실패: {e}")
             print("⚠️ 모의 모델 클라이언트를 사용합니다...")
             
             class MockChatCompletionClient:
-                def __init__(self, model, api_key, base_url):
+                def __init__(self, model, api_key):
                     self.model = model
                     self.api_key = api_key
-                    self.base_url = base_url
                 
-                def create(self, messages, **kwargs):
-                    return {"choices": [{"message": {"content": "Mock response"}}]}
-                
-                def create_stream(self, messages, **kwargs):
-                    return iter([{"choices": [{"message": {"content": "Mock stream"}}]}])
+                async def create(self, messages, **kwargs):
+                    from autogen_core.models import CreateResult, RequestUsage
+                    return CreateResult(
+                        content="Mock response from Claude",
+                        finish_reason="stop",
+                        usage=RequestUsage(prompt_tokens=0, completion_tokens=10)
+                    )
             
             self.model_client = MockChatCompletionClient(
-                model=self.config.OPENAI_MODEL,
-                api_key=self.config.OPENAI_API_KEY,
-                base_url="https://api.openai.com/v1"
+                model=self.config.CLAUDE_MODEL,
+                api_key=self.config.ANTHROPIC_API_KEY
             )
             print("✅ 모의 모델 클라이언트 생성 성공")
         
@@ -74,12 +68,12 @@ class ReporterAgent:
             self.reporter = None
             self.user_proxy = None
         
-    def generate_report(self, all_data: Dict[str, Any], user_request: str) -> Dict[str, Any]:
+    def generate_report(self, collector_result: Dict[str, Any], processor_result: Dict[str, Any], action_result: Dict[str, Any], user_request: str) -> Dict[str, Any]:
         """전체 데이터를 바탕으로 최종 보고서 생성"""
         print(f"📊 보고서 생성 시작")
         
         # 1. 데이터 통합 및 정리
-        integrated_data = self._integrate_all_data(all_data)
+        integrated_data = self._integrate_all_data(collector_result, processor_result, action_result, user_request)
         
         # 2. 보고서 구조 생성
         report_structure = self._create_report_structure(integrated_data, user_request)
@@ -90,33 +84,73 @@ class ReporterAgent:
         # 4. 최종 보고서 조합
         final_report = self._compile_final_report(report_content, user_request)
         
-        # 5. 다양한 형식으로 내보내기
-        export_formats = self._export_report(final_report)
+        # 5. 보고서 파일 저장
+        save_result = self._save_report(final_report, user_request)
         
         return {
             'status': 'success',
-            'message': '보고서 생성이 완료되었습니다.',
+            'message': '보고서 생성 및 저장이 완료되었습니다.',
             'data': {
-                'report': final_report,
-                'export_formats': export_formats
+                'report_content': final_report,
+                'saved_path': save_result.get('filepath', ''),
+                'file_size': save_result.get('file_size', 0)
             }
         }
         
-    def _integrate_all_data(self, all_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _integrate_all_data(self, collector_result: Dict[str, Any], processor_result: Dict[str, Any], action_result: Dict[str, Any], user_request: str) -> Dict[str, Any]:
         """모든 에이전트의 데이터 통합"""
         integrated = {
-            'user_request': all_data.get('user_request', ''),
-            'collection_data': all_data.get('collection_data', {}),
-            'processing_data': all_data.get('processing_data', {}),
-            'action_data': all_data.get('action_data', {}),
-            'metadata': {
-                'timestamp': self._get_current_timestamp(),
-                'total_agents': 4,
-                'workflow_status': 'completed'
+            'user_request': user_request,
+            'timestamp': datetime.now().isoformat(),
+            'collector_data': collector_result.get('data', {}),
+            'processor_data': processor_result.get('data', {}),
+            'action_data': action_result.get('data', {}),
+            'summary': {
+                'total_sites': collector_result.get('data', {}).get('collection_summary', {}).get('total_sites', 0),
+                'successful_scrapes': collector_result.get('data', {}).get('collection_summary', {}).get('successful_scrapes', 0),
+                'categories_found': len(processor_result.get('data', {}).get('structured_data', {}).get('categories', {})),
+                'keywords_extracted': len(processor_result.get('data', {}).get('structured_data', {}).get('keywords', [])),
+                'insights_generated': len(processor_result.get('data', {}).get('insights', [])),
+                'actions_performed': action_result.get('data', {}).get('action_results', {}).get('total_actions', 0)
             }
         }
         
         return integrated
+    
+    def _save_report(self, report_content: str, user_request: str) -> Dict[str, Any]:
+        """보고서를 파일로 저장"""
+        try:
+            # 저장 디렉토리 생성
+            save_dir = "reports"
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir)
+            
+            # 파일명 생성
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_request = "".join(c for c in user_request if c.isalnum() or c in (' ', '-', '_')).rstrip()
+            safe_request = safe_request[:30]  # 파일명 길이 제한
+            filename = f"report_{timestamp}_{safe_request}.txt"
+            filepath = os.path.join(save_dir, filename)
+            
+            # 파일 저장
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(report_content)
+            
+            # 파일 크기 확인
+            file_size = os.path.getsize(filepath)
+            
+            return {
+                'status': 'success',
+                'filepath': filepath,
+                'file_size': file_size,
+                'message': f'보고서가 저장되었습니다: {filename}'
+            }
+            
+        except Exception as e:
+            return {
+                'status': 'error',
+                'message': f'보고서 저장 실패: {str(e)}'
+            }
         
     def _create_report_structure(self, integrated_data: Dict[str, Any], user_request: str) -> Dict[str, Any]:
         """보고서 구조 생성"""
